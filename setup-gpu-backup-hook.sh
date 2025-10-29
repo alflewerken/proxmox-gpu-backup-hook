@@ -70,8 +70,9 @@ vm_count=0
 ct_count=0
 
 # Check VMs (qemu)
-for vm in /etc/pve/qemu-server/*.conf 2>/dev/null; do
-    if [ -f "$vm" ] && grep -q '^hostpci' "$vm" 2>/dev/null; then
+for vm in /etc/pve/qemu-server/*.conf; do
+    [ -f "$vm" ] || continue
+    if grep -q '^hostpci' "$vm" 2>/dev/null; then
         vmid=$(basename "$vm" .conf)
         gpu=$(grep '^hostpci' "$vm" | head -1 | sed -n 's/.*hostpci[0-9]*:[[:space:]]*\([0-9a-fA-F:\\.]*\).*/\1/p' | sed 's/^0000://')
         name=$(grep '^name:' "$vm" | cut -d' ' -f2 2>/dev/null || echo "unnamed")
@@ -82,8 +83,9 @@ for vm in /etc/pve/qemu-server/*.conf 2>/dev/null; do
 done
 
 # Check Containers (lxc)
-for ct in /etc/pve/lxc/*.conf 2>/dev/null; do
-    if [ -f "$ct" ] && grep -q 'lxc.cgroup2.devices.allow' "$ct" 2>/dev/null; then
+for ct in /etc/pve/lxc/*.conf; do
+    [ -f "$ct" ] || continue
+    if grep -q 'lxc.cgroup2.devices.allow' "$ct" 2>/dev/null; then
         ctid=$(basename "$ct" .conf)
         name=$(grep '^hostname:' "$ct" | cut -d' ' -f2 2>/dev/null || echo "unnamed")
         echo "  📦 CT $ctid ($name): has GPU access"
@@ -370,8 +372,9 @@ if [ "$gpu_vms_found" = true ]; then
     echo "" >> "$summary_file"
     echo "Detected VMs/Containers:" >> "$summary_file"
     
-    for vm in /etc/pve/qemu-server/*.conf 2>/dev/null; do
-        if [ -f "$vm" ] && grep -q '^hostpci' "$vm" 2>/dev/null; then
+    for vm in /etc/pve/qemu-server/*.conf; do
+        [ -f "$vm" ] || continue
+        if grep -q '^hostpci' "$vm" 2>/dev/null; then
             vmid=$(basename "$vm" .conf)
             gpu=$(grep '^hostpci' "$vm" | head -1 | sed -n 's/.*hostpci[0-9]*:[[:space:]]*\([0-9a-fA-F:\\.]*\).*/\1/p' | sed 's/^0000://')
             name=$(grep '^name:' "$vm" | cut -d' ' -f2 2>/dev/null || echo "unnamed")
@@ -379,8 +382,9 @@ if [ "$gpu_vms_found" = true ]; then
         fi
     done
     
-    for ct in /etc/pve/lxc/*.conf 2>/dev/null; do
-        if [ -f "$ct" ] && grep -q 'lxc.cgroup2.devices.allow' "$ct" 2>/dev/null; then
+    for ct in /etc/pve/lxc/*.conf; do
+        [ -f "$ct" ] || continue
+        if grep -q 'lxc.cgroup2.devices.allow' "$ct" 2>/dev/null; then
             ctid=$(basename "$ct" .conf)
             name=$(grep '^hostname:' "$ct" | cut -d' ' -f2 2>/dev/null || echo "unnamed")
             echo "  - CT $ctid ($name): has GPU access" >> "$summary_file"
