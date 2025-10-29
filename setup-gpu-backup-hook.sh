@@ -1,18 +1,23 @@
 #!/bin/bash
 #
-# Proxmox GPU Backup Hook - Automatische Installation
-# Für Server mit GPU-Passthrough VMs
+# Proxmox GPU Backup Hook - Automatic Installation (Version 2.0)
+# For servers with GPU-Passthrough VMs
 #
-# Löst das Problem: VMs mit geteilten GPUs können nicht gleichzeitig laufen
-# und werden beim Backup übersprungen.
+# Solves the problem: VMs with shared GPUs cannot run simultaneously
+# and are skipped during backup.
+#
+# NEW in Version 2.0:
+# - Fully automatic GPU detection - NO manual configuration needed!
+# - Dynamic VM scanning - adapts automatically to VM changes
+# - Zero-configuration installation
 #
 # Installation:
-#   wget https://raw.githubusercontent.com/alflewerken/proxmox-gpu-backup-hook/setup-gpu-backup-hook.sh
+#   wget https://raw.githubusercontent.com/alflewerken/proxmox-gpu-backup-hook/main/setup-gpu-backup-hook.sh
 #   chmod +x setup-gpu-backup-hook.sh
 #   ./setup-gpu-backup-hook.sh
 #
-# Oder direkt:
-#   curl -sL [URL] | bash
+# Or directly:
+#   curl -sL https://raw.githubusercontent.com/alflewerken/proxmox-gpu-backup-hook/main/setup-gpu-backup-hook.sh | bash
 #
 
 set -e
@@ -20,98 +25,103 @@ set -e
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 HOOK_SCRIPT="/usr/local/bin/backup-gpu-hook.sh"
 VZDUMP_CONF="/etc/vzdump.conf"
 LOGFILE="/var/log/vzdump-gpu-hook.log"
+VERSION="2.0"
 
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}Proxmox GPU Backup Hook Setup${NC}"
+echo -e "${GREEN}Proxmox GPU Backup Hook Setup v${VERSION}${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
+echo -e "${BLUE}🎯 Zero-Configuration Installation${NC}"
+echo -e "${BLUE}   Dynamic GPU detection - no manual setup needed!${NC}"
+echo ""
 
-# Prüfe ob Proxmox VE
+# Check if Proxmox VE
 if [ ! -d "/etc/pve" ]; then
-    echo -e "${RED}FEHLER: Dies ist kein Proxmox VE System!${NC}"
+    echo -e "${RED}ERROR: This is not a Proxmox VE system!${NC}"
     exit 1
 fi
 
-echo -e "${GREEN}[1/6]${NC} Erkenne GPUs..."
+echo -e "${GREEN}[1/7]${NC} Detecting GPUs..."
 echo "---------------------------------------"
-if ! lspci | grep -E 'VGA|3D|Display' > /dev/null; then
-    echo -e "${YELLOW}⚠ Keine GPUs gefunden${NC}"
+gpu_count=0
+if lspci | grep -E 'VGA|3D|Display' > /dev/null; then
+    lspci | grep -E 'VGA|3D|Display' | while read -r line; do
+        echo "  🎮 $line"
+        gpu_count=$((gpu_count + 1))
+    done
+    echo ""
+    echo -e "${GREEN}✓${NC} Found GPUs in system"
 else
-    lspci | grep -E 'VGA|3D|Display'
+    echo -e "${YELLOW}⚠ No GPUs detected${NC}"
+    echo "  Hook will still be installed for future use"
 fi
 echo ""
 
-echo -e "${GREEN}[2/6]${NC} Suche VMs mit GPU-Passthrough..."
+echo -e "${GREEN}[2/7]${NC} Scanning VMs with GPU-Passthrough..."
 echo "---------------------------------------"
 gpu_vms_found=false
+vm_count=0
+ct_count=0
 
-# Prüfe VMs (qemu)
+# Check VMs (qemu)
 for vm in /etc/pve/qemu-server/*.conf 2>/dev/null; do
     if [ -f "$vm" ] && grep -q '^hostpci' "$vm" 2>/dev/null; then
         vmid=$(basename "$vm" .conf)
-        gpu=$(grep '^hostpci' "$vm" | head -1 | sed -n 's/.*hostpci[0-9]*: \([0-9a-f:\.]*\).*/\1/p' | sed 's/^0000://')
-        name=$(grep '^name:' "$vm" | cut -d' ' -f2 2>/dev/null || echo "N/A")
-        echo "VM $vmid ($name): GPU $gpu"
+        gpu=$(grep '^hostpci' "$vm" | head -1 | sed -n 's/.*hostpci[0-9]*:[[:space:]]*\([0-9a-fA-F:\\.]*\).*/\1/p' | sed 's/^0000://')
+        name=$(grep '^name:' "$vm" | cut -d' ' -f2 2>/dev/null || echo "unnamed")
+        echo "  📦 VM $vmid ($name): GPU $gpu"
         gpu_vms_found=true
+        vm_count=$((vm_count + 1))
     fi
 done
 
-# Prüfe Container (lxc)
+# Check Containers (lxc)
 for ct in /etc/pve/lxc/*.conf 2>/dev/null; do
     if [ -f "$ct" ] && grep -q 'lxc.cgroup2.devices.allow' "$ct" 2>/dev/null; then
         ctid=$(basename "$ct" .conf)
-        name=$(grep '^hostname:' "$ct" | cut -d' ' -f2 2>/dev/null || echo "N/A")
-        echo "CT $ctid ($name): hat GPU-Zugriff"
+        name=$(grep '^hostname:' "$ct" | cut -d' ' -f2 2>/dev/null || echo "unnamed")
+        echo "  📦 CT $ctid ($name): has GPU access"
         gpu_vms_found=true
+        ct_count=$((ct_count + 1))
     fi
 done
 
 if [ "$gpu_vms_found" = false ]; then
-    echo -e "${YELLOW}⚠ Keine VMs/Container mit GPU-Passthrough gefunden${NC}"
-    echo "  Hook-Skript wird trotzdem installiert."
+    echo -e "${YELLOW}⚠ No VMs/Containers with GPU-Passthrough found${NC}"
+    echo "  Hook will be installed and ready when you add GPU VMs"
+else
+    echo ""
+    echo -e "${GREEN}✓${NC} Found $vm_count VMs and $ct_count Containers with GPU passthrough"
+    echo -e "${BLUE}  These will be automatically managed by the hook!${NC}"
 fi
 echo ""
 
-echo -e "${GREEN}[3/6]${NC} Erstelle Hook-Skript..."
+echo -e "${GREEN}[3/7]${NC} Downloading hook script..."
 echo "---------------------------------------"
-# Erstelle Hook-Skript direkt im Setup
-cat > "$HOOK_SCRIPT" << 'HOOKSCRIPT'
+# Download from GitHub or use local file
+SCRIPT_URL="https://raw.githubusercontent.com/alflewerken/proxmox-gpu-backup-hook/main/backup-gpu-hook.sh"
+
+if command -v wget &> /dev/null; then
+    if wget -q -O "$HOOK_SCRIPT" "$SCRIPT_URL" 2>/dev/null; then
+        echo -e "${GREEN}✓${NC} Hook script downloaded successfully"
+    else
+        echo -e "${YELLOW}⚠${NC} Download failed, using embedded script"
+        # Fallback: Embed script directly
+        cat > "$HOOK_SCRIPT" << 'EMBEDDED_SCRIPT'
 #!/bin/bash
-#
-# Proxmox Backup Hook für GPU-Passthrough VMs
-# Stoppt konkurrierende VMs mit derselben GPU vor dem Backup
-# und startet sie nach dem Backup-Job wieder
-#
-# Generiert von: setup-gpu-backup-hook.sh
-#
+# Embedded backup-gpu-hook.sh v2.0
+# See: https://github.com/alflewerken/proxmox-gpu-backup-hook
 
 PHASE=$1
 VMID=$2
 LOGFILE="/var/log/vzdump-gpu-hook.log"
 STATEFILE="/tmp/vzdump-gpu-stopped-vms.state"
-
-# ============================================================
-# GPU-ZUORDNUNG - HIER ANPASSEN!
-# ============================================================
-# Format: GPU_GROUPS["PCI-Adresse"]="VM1 VM2 VM3"
-# PCI-Adresse OHNE "0000:" Präfix (z.B. "01:00.0" statt "0000:01:00.0")
-#
-# Beispiele:
-# GPU_GROUPS["01:00.0"]="104 106 107 116"  # RTX 4090
-# GPU_GROUPS["05:00.0"]="105 112"          # RTX 3090 Ti
-# GPU_GROUPS["00:02.1"]="201"              # Intel UHD VF
-#
-declare -A GPU_GROUPS
-
-# TODO: Trage hier deine GPU-Zuordnungen ein:
-# GPU_GROUPS["XX:XX.X"]="VM-IDs"  # GPU-Beschreibung
-
-# ============================================================
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$PHASE] [VM $VMID] $1" >> "$LOGFILE"
@@ -119,30 +129,44 @@ log() {
 
 get_vm_gpu() {
     local vmid=$1
-    # Prüfe zuerst qemu-server (VMs)
-    local gpu=$(grep "^hostpci" /etc/pve/qemu-server/${vmid}.conf 2>/dev/null | \
-                head -1 | \
-                sed -n 's/.*hostpci[0-9]*: \([0-9a-f:\.]*\).*/\1/p' | \
-                sed 's/^0000://')
-    
-    # Falls leer, prüfe lxc (Container)
-    if [ -z "$gpu" ]; then
-        gpu=$(grep "^lxc.cgroup2.devices.allow" /etc/pve/lxc/${vmid}.conf 2>/dev/null | \
-              head -1 | \
-              grep -oP '([0-9a-f]{2}:){2}[0-9a-f]{2}\.[0-9]')
+    local gpu=""
+    if [ -f "/etc/pve/qemu-server/${vmid}.conf" ]; then
+        gpu=$(grep "^hostpci" /etc/pve/qemu-server/${vmid}.conf 2>/dev/null | head -1 | sed -n 's/.*hostpci[0-9]*:[[:space:]]*\([0-9a-fA-F:\\.]*\).*/\1/p' | sed 's/^0000://')
     fi
-    
+    if [ -z "$gpu" ] && [ -f "/etc/pve/lxc/${vmid}.conf" ]; then
+        gpu=$(grep "^lxc.cgroup2.devices.allow" /etc/pve/lxc/${vmid}.conf 2>/dev/null | head -1 | grep -oP '([0-9a-fA-F]{2}:){2}[0-9a-fA-F]{2}\.[0-9]')
+    fi
     echo "$gpu"
+}
+
+find_all_vms_with_gpu() {
+    local target_gpu=$1
+    local vms=()
+    for conf in /etc/pve/qemu-server/*.conf; do
+        [ -f "$conf" ] || continue
+        local vmid=$(basename "$conf" .conf)
+        local vm_gpu=$(get_vm_gpu "$vmid")
+        if [ -n "$vm_gpu" ] && [ "$vm_gpu" = "$target_gpu" ]; then
+            vms+=("$vmid")
+        fi
+    done
+    for conf in /etc/pve/lxc/*.conf; do
+        [ -f "$conf" ] || continue
+        local ctid=$(basename "$conf" .conf)
+        local ct_gpu=$(get_vm_gpu "$ctid")
+        if [ -n "$ct_gpu" ] && [ "$ct_gpu" = "$target_gpu" ]; then
+            vms+=("$ctid")
+        fi
+    done
+    echo "${vms[@]}"
 }
 
 is_vm_running() {
     local vmid=$1
-    # Prüfe ob es eine VM ist
     if [ -f "/etc/pve/qemu-server/${vmid}.conf" ]; then
         qm status $vmid 2>/dev/null | grep -q "running"
         return $?
     fi
-    # Prüfe ob es ein Container ist
     if [ -f "/etc/pve/lxc/${vmid}.conf" ]; then
         pct status $vmid 2>/dev/null | grep -q "running"
         return $?
@@ -153,138 +177,140 @@ is_vm_running() {
 stop_vm() {
     local vmid=$1
     if [ -f "/etc/pve/qemu-server/${vmid}.conf" ]; then
-        qm stop $vmid
+        log "Stopping VM $vmid"
+        qm stop $vmid 2>&1 | head -5 >> "$LOGFILE"
     elif [ -f "/etc/pve/lxc/${vmid}.conf" ]; then
-        pct stop $vmid
+        log "Stopping Container $vmid"
+        pct stop $vmid 2>&1 | head -5 >> "$LOGFILE"
     fi
 }
 
 start_vm() {
     local vmid=$1
     if [ -f "/etc/pve/qemu-server/${vmid}.conf" ]; then
-        log "Starte VM $vmid wieder"
-        qm start $vmid
+        log "Starting VM $vmid"
+        qm start $vmid 2>&1 | head -5 >> "$LOGFILE"
     elif [ -f "/etc/pve/lxc/${vmid}.conf" ]; then
-        log "Starte Container $vmid wieder"
-        pct start $vmid
+        log "Starting Container $vmid"
+        pct start $vmid 2>&1 | head -5 >> "$LOGFILE"
     fi
 }
 
 stop_conflicting_vms() {
     local current_vm=$1
     local current_gpu=$(get_vm_gpu $current_vm)
-    
     if [ -z "$current_gpu" ]; then
-        log "VM/CT $current_vm hat keine GPU-Passthrough-Konfiguration"
+        log "VM/CT $current_vm has no GPU-Passthrough configuration"
         return 0
     fi
-    
-    log "VM/CT $current_vm nutzt GPU $current_gpu"
-    
-    # Finde alle VMs, die dieselbe GPU nutzen
-    for check_gpu in "${!GPU_GROUPS[@]}"; do
-        if [[ "$current_gpu" == "$check_gpu" ]]; then
-            log "GPU-Gruppe gefunden: ${GPU_GROUPS[$check_gpu]}"
-            
-            for vm in ${GPU_GROUPS[$check_gpu]}; do
-                if [ "$vm" == "$current_vm" ]; then
-                    continue
-                fi
-                
-                # Prüfe ob VM/Container läuft
-                if is_vm_running $vm; then
-                    log "Stoppe VM/CT $vm (nutzt dieselbe GPU $check_gpu)"
-                    # Merke, dass diese VM ursprünglich lief
-                    echo "$vm" >> "$STATEFILE"
-                    stop_vm $vm
-                    sleep 2
-                fi
-            done
+    log "VM/CT $current_vm uses GPU $current_gpu"
+    local conflicting_vms=$(find_all_vms_with_gpu "$current_gpu")
+    if [ -z "$conflicting_vms" ]; then
+        log "No other VMs/CTs with GPU $current_gpu found"
+        return 0
+    fi
+    log "VMs/CTs with GPU $current_gpu: $conflicting_vms"
+    for vm in $conflicting_vms; do
+        if [ "$vm" = "$current_vm" ]; then
+            continue
+        fi
+        if is_vm_running $vm; then
+            log "Stopping VM/CT $vm (uses same GPU $current_gpu)"
+            echo "$vm" >> "$STATEFILE"
+            stop_vm $vm
+            sleep 2
         fi
     done
 }
 
 restart_stopped_vms() {
     if [ ! -f "$STATEFILE" ]; then
-        log "Keine gestoppten VMs zum Neustarten"
+        log "No stopped VMs to restart"
         return 0
     fi
-    
-    log "Starte gestoppte VMs/Container wieder"
-    
-    # Lese alle gestoppten VMs und starte sie
-    while IFS= read -r vmid; do
+    log "Restarting stopped VMs/Containers"
+    sort -u "$STATEFILE" | while IFS= read -r vmid; do
         if [ -n "$vmid" ]; then
             start_vm $vmid
-            sleep 1
+            sleep 2
         fi
-    done < "$STATEFILE"
-    
-    # Lösche State-Datei
+    done
     rm -f "$STATEFILE"
-    log "Alle gestoppten VMs/Container wurden neu gestartet"
+    log "All stopped VMs/Containers have been restarted"
 }
 
 case "$PHASE" in
     job-start)
-        log "=== Backup-Job startet ==="
-        # Lösche alte State-Datei falls vorhanden
+        log "=== Backup job starting ==="
         rm -f "$STATEFILE"
         ;;
-        
     backup-start)
-        log "Backup startet für VM/CT $VMID"
+        log "Backup starting for VM/CT $VMID"
         stop_conflicting_vms $VMID
         ;;
-        
     backup-end)
-        log "Backup beendet für VM/CT $VMID"
+        log "Backup completed for VM/CT $VMID"
         ;;
-        
     job-end)
-        log "=== Backup-Job abgeschlossen ==="
+        log "=== Backup job completed ==="
         restart_stopped_vms
         ;;
-        
     *)
-        log "Unbekannte Phase: $PHASE"
+        log "Unknown phase: $PHASE (ignored)"
         ;;
 esac
-
 exit 0
-HOOKSCRIPT
-
-chmod +x "$HOOK_SCRIPT"
-echo -e "${GREEN}✓${NC} Hook-Skript erstellt: $HOOK_SCRIPT"
-echo ""
-echo -e "${GREEN}[4/6]${NC} Konfiguriere vzdump.conf..."
-echo "---------------------------------------"
-
-# Erstelle Backup der vzdump.conf
-if [ -f "$VZDUMP_CONF" ]; then
-    cp "$VZDUMP_CONF" "${VZDUMP_CONF}.backup-$(date +%Y%m%d-%H%M%S)"
-    echo -e "${GREEN}✓${NC} Backup erstellt: ${VZDUMP_CONF}.backup-*"
+EMBEDDED_SCRIPT
+    fi
+elif command -v curl &> /dev/null; then
+    if curl -sL -o "$HOOK_SCRIPT" "$SCRIPT_URL" 2>/dev/null; then
+        echo -e "${GREEN}✓${NC} Hook script downloaded successfully"
+    else
+        echo -e "${RED}ERROR: Could not download script and no fallback available${NC}"
+        exit 1
+    fi
+else
+    echo -e "${RED}ERROR: Neither wget nor curl available${NC}"
+    exit 1
 fi
 
-# Prüfe ob Hook bereits konfiguriert ist
+chmod +x "$HOOK_SCRIPT"
+echo -e "${GREEN}✓${NC} Hook script installed: $HOOK_SCRIPT"
+echo ""
+
+echo -e "${GREEN}[4/7]${NC} Configuring vzdump.conf..."
+echo "---------------------------------------"
+
+# Create backup of vzdump.conf
+if [ -f "$VZDUMP_CONF" ]; then
+    backup_file="${VZDUMP_CONF}.backup-$(date +%Y%m%d-%H%M%S)"
+    cp "$VZDUMP_CONF" "$backup_file"
+    echo -e "${GREEN}✓${NC} Backup created: $backup_file"
+fi
+
+# Check if hook already configured
 if grep -q "^script:.*backup-gpu-hook.sh" "$VZDUMP_CONF" 2>/dev/null; then
-    echo -e "${YELLOW}⚠${NC} Hook-Skript bereits in vzdump.conf konfiguriert"
+    echo -e "${YELLOW}⚠${NC} Hook script already configured in vzdump.conf"
 else
+    # Ensure vzdump.conf exists
+    touch "$VZDUMP_CONF"
+    
     cat >> "$VZDUMP_CONF" << 'EOF'
 
 # ============================================================
-# GPU-Passthrough Backup Hook
-# Generiert von: setup-gpu-backup-hook.sh
+# GPU-Passthrough Backup Hook (v2.0 - Dynamic)
+# Automatically detects and manages GPU conflicts
+# No manual configuration needed!
 # ============================================================
 script: /usr/local/bin/backup-gpu-hook.sh
 mode: stop
 ionice: 7
 EOF
-    echo -e "${GREEN}✓${NC} vzdump.conf aktualisiert"
+    echo -e "${GREEN}✓${NC} vzdump.conf updated with automatic GPU management"
 fi
 echo ""
 
-echo -e "${GREEN}[5/6]${NC} Erstelle Logrotation..."
+echo -e "${GREEN}[5/7]${NC} Setting up log rotation..."
 echo "---------------------------------------"
 cat > /etc/logrotate.d/vzdump-gpu-hook << 'EOF'
 /var/log/vzdump-gpu-hook.log {
@@ -293,113 +319,143 @@ cat > /etc/logrotate.d/vzdump-gpu-hook << 'EOF'
     compress
     missingok
     notifempty
+    create 0640 root root
 }
 EOF
-echo -e "${GREEN}✓${NC} Logrotation konfiguriert"
+echo -e "${GREEN}✓${NC} Log rotation configured (weekly, 4 weeks retention)"
 echo ""
 
-echo -e "${GREEN}[6/6]${NC} Erstelle Beispiel-Konfiguration..."
+echo -e "${GREEN}[6/7]${NC} Testing hook installation..."
 echo "---------------------------------------"
 
-# Sammle GPU-Informationen für Beispiel
-example_config="/tmp/gpu-backup-example.txt"
-cat > "$example_config" << 'EOF'
-# ============================================================
-# BEISPIEL GPU-ZUORDNUNGEN FÜR DEIN SYSTEM
-# ============================================================
-# Kopiere diese Zeilen in /usr/local/bin/backup-gpu-hook.sh
-# und passe sie an deine VMs an.
-#
-
-declare -A GPU_GROUPS
-
-EOF
-
-# Erstelle automatisch Vorschläge basierend auf gefundenen VMs
-echo "# Gefundene GPU-Konfigurationen:" >> "$example_config"
-echo "#" >> "$example_config"
-
-declare -A gpu_to_vms
-
-for vm in /etc/pve/qemu-server/*.conf 2>/dev/null; do
-    if [ -f "$vm" ] && grep -q '^hostpci' "$vm" 2>/dev/null; then
-        vmid=$(basename "$vm" .conf)
-        gpu=$(grep '^hostpci' "$vm" | head -1 | sed -n 's/.*hostpci[0-9]*: \([0-9a-f:\.]*\).*/\1/p' | sed 's/^0000://')
-        if [ -n "$gpu" ]; then
-            if [ -z "${gpu_to_vms[$gpu]}" ]; then
-                gpu_to_vms[$gpu]="$vmid"
-            else
-                gpu_to_vms[$gpu]="${gpu_to_vms[$gpu]} $vmid"
-            fi
-        fi
+# Test hook execution
+if "$HOOK_SCRIPT" job-start test-install 2>&1 | grep -q "job starting"; then
+    echo -e "${GREEN}✓${NC} Hook script executes successfully"
+    
+    # Check if log was created
+    if [ -f "$LOGFILE" ]; then
+        echo -e "${GREEN}✓${NC} Log file created: $LOGFILE"
+        echo ""
+        echo "Recent log entries:"
+        tail -3 "$LOGFILE" | sed 's/^/  /'
     fi
-done
+else
+    echo -e "${YELLOW}⚠${NC} Hook test completed (check logs for details)"
+fi
+echo ""
 
-for gpu in "${!gpu_to_vms[@]}"; do
-    gpu_model=$(lspci -s "0000:$gpu" 2>/dev/null | grep -oP ':\s+\K.*' || echo "Unknown GPU")
-    echo "GPU_GROUPS[\"$gpu\"]=\"${gpu_to_vms[$gpu]}\"  # $gpu_model" >> "$example_config"
-done
+echo -e "${GREEN}[7/7]${NC} Generating system summary..."
+echo "---------------------------------------"
 
-if [ ${#gpu_to_vms[@]} -eq 0 ]; then
-    cat >> "$example_config" << 'EOF'
-# Keine VMs mit GPU-Passthrough automatisch erkannt.
-# Beispiel-Konfiguration:
-#
-# GPU_GROUPS["01:00.0"]="100 101 102"  # NVIDIA RTX 4090
-# GPU_GROUPS["05:00.0"]="110 111"      # NVIDIA RTX 3090 Ti
-# GPU_GROUPS["00:02.1"]="200"          # Intel UHD Graphics VF
+# Create summary file
+summary_file="/tmp/gpu-backup-summary-$(date +%Y%m%d-%H%M%S).txt"
+cat > "$summary_file" << EOF
+# ============================================================
+# Proxmox GPU Backup Hook - Installation Summary
+# Generated: $(date '+%Y-%m-%d %H:%M:%S')
+# Version: ${VERSION} (Dynamic GPU Detection)
+# ============================================================
+
+## Installation Status
+✅ Hook script installed: $HOOK_SCRIPT
+✅ Configuration updated: $VZDUMP_CONF
+✅ Log rotation configured: /etc/logrotate.d/vzdump-gpu-hook
+✅ Log file: $LOGFILE
+
+## GPU Detection Summary
 EOF
+
+if [ "$gpu_vms_found" = true ]; then
+    echo "Status: Active - GPU VMs detected and will be managed automatically" >> "$summary_file"
+    echo "" >> "$summary_file"
+    echo "Detected VMs/Containers:" >> "$summary_file"
+    
+    for vm in /etc/pve/qemu-server/*.conf 2>/dev/null; do
+        if [ -f "$vm" ] && grep -q '^hostpci' "$vm" 2>/dev/null; then
+            vmid=$(basename "$vm" .conf)
+            gpu=$(grep '^hostpci' "$vm" | head -1 | sed -n 's/.*hostpci[0-9]*:[[:space:]]*\([0-9a-fA-F:\\.]*\).*/\1/p' | sed 's/^0000://')
+            name=$(grep '^name:' "$vm" | cut -d' ' -f2 2>/dev/null || echo "unnamed")
+            echo "  - VM $vmid ($name): GPU $gpu" >> "$summary_file"
+        fi
+    done
+    
+    for ct in /etc/pve/lxc/*.conf 2>/dev/null; do
+        if [ -f "$ct" ] && grep -q 'lxc.cgroup2.devices.allow' "$ct" 2>/dev/null; then
+            ctid=$(basename "$ct" .conf)
+            name=$(grep '^hostname:' "$ct" | cut -d' ' -f2 2>/dev/null || echo "unnamed")
+            echo "  - CT $ctid ($name): has GPU access" >> "$summary_file"
+        fi
+    done
+else
+    echo "Status: Ready - No GPU VMs detected yet" >> "$summary_file"
+    echo "The hook will automatically activate when you add GPU passthrough VMs" >> "$summary_file"
 fi
 
-cat >> "$example_config" << 'EOF'
+cat >> "$summary_file" << 'EOF'
 
-# ============================================================
-# SO TRÄGST DU DIE KONFIGURATION EIN:
-# ============================================================
-# 1. Öffne das Hook-Skript:
-#    nano /usr/local/bin/backup-gpu-hook.sh
-#
-# 2. Finde die Zeilen mit "TODO: Trage hier deine GPU-Zuordnungen ein"
-#    (ungefähr bei Zeile 23-26)
-#
-# 3. Ersetze die TODO-Zeile durch deine GPU_GROUPS Definitionen
-#    (siehe oben die automatisch erkannten Vorschläge)
-#
-# 4. Speichern und Skript testen:
-#    /usr/local/bin/backup-gpu-hook.sh job-start test
-#    cat /var/log/vzdump-gpu-hook.log
-#
-# ============================================================
+## How It Works (Zero Configuration!)
+The hook script automatically:
+1. Scans all VM/CT configurations before each backup
+2. Identifies which VMs share the same GPU
+3. Stops conflicting VMs temporarily during backup
+4. Restarts all stopped VMs after backup completes
+
+No manual GPU group configuration needed!
+
+## Next Steps
+1. Create a backup job in Proxmox WebUI:
+   - Navigate to: Datacenter → Backup → Add
+   - Schedule: e.g., 02:00 (2 AM)
+   - Mode: stop (already configured)
+   - Storage: Select your backup storage
+   - VMs: Select VMs to backup
+
+2. Monitor first backup:
+   tail -f /var/log/vzdump-gpu-hook.log
+
+3. Review backup logs in WebUI:
+   Datacenter → Tasks
+
+## Documentation
+- GitHub: https://github.com/alflewerken/proxmox-gpu-backup-hook
+- Issues: https://github.com/alflewerken/proxmox-gpu-backup-hook/issues
+
+## Log Files
+- Hook operations: /var/log/vzdump-gpu-hook.log
+- Backup tasks: Datacenter → Tasks in WebUI
+
+============================================================
 EOF
 
-cat "$example_config"
+cat "$summary_file"
 echo ""
-echo -e "${GREEN}✓${NC} Beispiel-Konfiguration gespeichert: $example_config"
+echo -e "${GREEN}✓${NC} Summary saved to: $summary_file"
 echo ""
 
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}✓ Installation abgeschlossen!${NC}"
+echo -e "${GREEN}✅ Installation Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo -e "${YELLOW}WICHTIG - NÄCHSTE SCHRITTE:${NC}"
+echo -e "${BLUE}🎉 Version 2.0 Features:${NC}"
+echo "  ✅ Fully automatic GPU detection"
+echo "  ✅ Zero manual configuration required"
+echo "  ✅ Dynamic VM scanning"
+echo "  ✅ Adapts automatically to VM changes"
 echo ""
-echo "1. GPU-Zuordnungen konfigurieren:"
-echo "   nano $HOOK_SCRIPT"
-echo "   (Suche nach 'TODO' und trage deine VMs ein)"
+echo -e "${YELLOW}📋 Quick Start:${NC}"
 echo ""
-echo "2. Beispiel-Konfiguration ansehen:"
-echo "   cat $example_config"
+echo "1. Create backup job in WebUI:"
+echo "   ${BLUE}Datacenter → Backup → Add${NC}"
 echo ""
-echo "3. Hook-Skript testen:"
-echo "   $HOOK_SCRIPT job-start test"
-echo "   cat $LOGFILE"
+echo "2. Monitor your first backup:"
+echo "   ${BLUE}tail -f $LOGFILE${NC}"
 echo ""
-echo "4. Backup-Job in Proxmox WebUI erstellen:"
-echo "   Datacenter → Backup → Add"
-echo "   - Schedule: z.B. 02:00"
-echo "   - Mode: stop (bereits konfiguriert)"
-echo "   - Storage: Dein Backup-Storage"
+echo "3. That's it! The hook handles everything automatically."
 echo ""
-echo -e "${GREEN}Dokumentation und Updates:${NC}"
-echo "https://github.com/alflewerken/proxmox-gpu-backup-hook/proxmox-gpu-backup-hook"
+echo -e "${GREEN}Documentation:${NC}"
+echo "https://github.com/alflewerken/proxmox-gpu-backup-hook"
+echo ""
+echo -e "${GREEN}Support:${NC}"
+echo "⭐ Star the repo if this saved your backups!"
+echo "🐛 Report issues on GitHub"
 echo ""
