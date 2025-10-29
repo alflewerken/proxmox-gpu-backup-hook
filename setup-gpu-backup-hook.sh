@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Proxmox GPU Backup Hook - Automatic Installation (Version 2.0)
+# Proxmox GPU Backup Hook - Automatic Installation (Version 2.0.1)
 # For servers with GPU-Passthrough VMs
 #
 # Solves the problem: VMs with shared GPUs cannot run simultaneously
