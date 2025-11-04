@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Proxmox](https://img.shields.io/badge/Proxmox-7.x%20%7C%208.x-orange.svg)](https://www.proxmox.com/)
 [![Bash](https://img.shields.io/badge/Bash-4.0%2B-green.svg)](https://www.gnu.org/software/bash/)
-[![Version](https://img.shields.io/badge/Version-2.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-2.2-blue.svg)](CHANGELOG.md)
 [![GitHub issues](https://img.shields.io/github/issues/alflewerken/proxmox-gpu-backup-hook)](https://github.com/alflewerken/proxmox-gpu-backup-hook/issues)
 [![GitHub stars](https://img.shields.io/github/stars/alflewerken/proxmox-gpu-backup-hook?style=social)](https://github.com/alflewerken/proxmox-gpu-backup-hook/stargazers)
 
@@ -13,592 +13,635 @@
 
 > **"From a Proxmox admin for Proxmox admins"**
 >
-> After hours of failed backup jobs and manual VM juggling, I built this hook to automate what should have been automatic. Version 2.0 makes it even easier - **fully automatic GPU detection, zero configuration required!**
+> After hours of failed backup jobs and manual VM juggling, I built this hook to automate what should have been automatic. Version 2.2 includes a critical fix for `--mode stop` backups that makes it production-ready!
 
-## 🆕 What's New in Version 2.0
+## 🆕 What's New in Version 2.2
 
-✨ **Zero-Configuration Installation** - No manual GPU group setup needed  
-✨ **Dynamic GPU Detection** - Automatically scans all VM configurations  
-✨ **Future-Proof** - Adapts automatically when you add/remove VMs or change GPU assignments  
+🔥 **CRITICAL FIX: VMID Parsing** - Fixed broken backup-start detection in `--mode stop` backups  
+✨ **Production Ready** - Extensively tested with real-world Proxmox setups  
+✨ **Zero-Configuration** - Automatic GPU detection, no manual setup needed  
+✨ **Future-Proof** - Adapts automatically when you add/remove VMs  
 ✨ **Container Support** - Works with both VMs and LXC containers  
-✨ **Intelligent Scanning** - Detects GPU sharing automatically before each backup  
 
-**Version 1.0 required manual configuration:**
+**The Problem (Fixed in v2.2):**
 ```bash
-# Old way - manual GPU groups (error-prone, maintenance required)
-GPU_GROUPS["01:00.0"]="100 101 102"  # Easy to forget VMs!
-GPU_GROUPS["05:00.0"]="110 111"      # Needs updating when VMs change
+# Proxmox passes: backup-start stop 105
+# v2.0-2.1: VMID=$2 → Got "stop" instead of "105" ❌
+# v2.2:     VMID=$3 → Correctly gets "105" ✅
 ```
 
-**Version 2.0 is fully automatic:**
+**Version 2.0 vs 2.2:**
 ```bash
-# New way - zero configuration!
-# Script automatically discovers:
-# - All VMs and containers
-# - Their GPU assignments
-# - Conflicts before each backup
-# No maintenance needed when VMs change!
+# Version 2.0-2.1 (BROKEN with --mode stop):
+VMID=$2  # Incorrectly captured "stop" as VMID
+
+# Version 2.2 (FIXED):
+if [[ "$2" =~ ^(stop|snapshot|suspend)$ ]]; then
+    VMID=$3  # Correctly gets VMID after mode
+else
+    VMID=$2  # Backwards compatible with other modes
+fi
 ```
+
+**Impact:** Without this fix, the hook silently fails with `--mode stop`, which is the most common backup mode for GPU VMs!
 
 ---
 
-## ⭐ Support the Project
+## The Problem 🐛
 
-If you find this project useful, please consider giving it a star! It helps others discover the solution and motivates continued development.
+Multiple Proxmox VMs cannot share a single physical GPU simultaneously. When backing up with `--mode stop`, Proxmox temporarily starts the VM, causing failures if another VM is already using the GPU:
 
-<div align="center">
-
-[![GitHub stars](https://img.shields.io/github/stars/alflewerken/proxmox-gpu-backup-hook?style=social)](https://github.com/alflewerken/proxmox-gpu-backup-hook/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/alflewerken/proxmox-gpu-backup-hook?style=social)](https://github.com/alflewerken/proxmox-gpu-backup-hook/network)
-
-</div>
-
----
-
-## 🎯 The Problem
-
-When multiple Proxmox VMs share the same physical GPU (GPU passthrough), they cannot run simultaneously. During backup operations, this causes VMs to be skipped if another VM is already using the shared GPU.
+```
+ERROR: PCI device '0000:05:00.0' already in use by VMID '104'
+ERROR: Backup of VM 102 failed - start failed: QEMU exited with code 1
+```
 
 **Real-world scenario:**
+- VMs 102, 103, 104, 105 share RTX 3090 Ti (PCI 05:00)
+- VM 104 is running → Backup of 102, 103, 105 fails
+- Manual intervention required every night 😢
+
+## The Solution ✅
+
+This hook **automatically manages VM conflicts**:
+
+1. **Before backup:** Detects which GPU the VM uses
+2. **Stops conflicting VMs:** Safely stops other VMs using the same GPU
+3. **Backs up the VM:** Backup proceeds without conflicts
+4. **Restarts stopped VMs:** After all backups complete, restarts all stopped VMs
+
 ```
-VM 100: Windows Gaming PC     ─┐
-VM 101: Ubuntu ML Workstation ─┼─ All share RTX 4090 (01:00.0)
-VM 102: AI Development Box    ─┘
-
-Backup starts at 02:00:
-  ✅ VM 100 backs up (was running, gets stopped)
-  ❌ VM 101 SKIPPED! GPU conflict with VM 100
-  ❌ VM 102 SKIPPED! GPU conflict with VM 100
-  
-Result: 66% backup failure rate 😱
-```
-
-## ✅ The Solution
-
-This hook script provides intelligent GPU conflict resolution with **zero configuration**:
-
-✅ **Automatic GPU Detection** - Dynamically scans VM configurations  
-✅ **Zero Manual Setup** - No GPU groups to configure  
-✅ **Smart VM Orchestration** - Stops conflicting VMs before backup starts  
-✅ **Sequential Processing** - Backs up all VMs one at a time  
-✅ **Automatic VM Restart** - Restarts originally running VMs after completion  
-✅ **Multi-GPU Support** - Handles unlimited GPUs automatically  
-✅ **Intel SR-IOV Compatible** - Works with Intel iGPU Virtual Functions  
-✅ **Container Support** - Manages both VMs and LXC containers  
-✅ **Future-Proof** - Adapts automatically to VM/GPU changes  
-✅ **Comprehensive Logging** - Detailed logs with automatic rotation  
-
-**Result after installing this hook:**
-```
-Backup starts at 02:00:
-  ✅ VM 100 backs up (conflicts auto-detected and resolved)
-  ✅ VM 101 backs up (GPU sharing managed automatically)
-  ✅ VM 102 backs up (sequential processing)
-  ✅ All originally running VMs restarted
-  
-Result: 100% backup success rate! 🎉
+[2025-11-04 09:08:02] [backup-start] [VM 102] VM/CT 102 uses GPU 05:00
+[2025-11-04 09:08:02] [backup-start] [VM 102] VMs/CTs with GPU 05:00: 102 103 104 105
+[2025-11-04 09:08:03] [backup-start] [VM 102] Stopping VM/CT 104 (uses same GPU)
+[2025-11-04 09:15:30] [backup-end] [VM 102] Backup completed
+[2025-11-04 09:15:30] [job-end] Starting VM 104
 ```
 
 ---
 
-## 🚀 Quick Start - One-Line Installation
+## Features 🎯
 
-Install the complete hook system with a single command - **no configuration needed**:
+- ✅ **Zero-Configuration** - Automatic GPU detection from VM configs
+- ✅ **Dynamic Discovery** - Scans all VMs before each backup
+- ✅ **Smart Conflict Resolution** - Only stops VMs that share the same GPU
+- ✅ **State Management** - Remembers which VMs to restart
+- ✅ **Multi-GPU Support** - Handles multiple different GPUs automatically
+- ✅ **Container Support** - Works with both QEMU VMs and LXC containers
+- ✅ **Production Tested** - Battle-tested with NVIDIA RTX 4090/3090 Ti setups
+- ✅ **Comprehensive Logging** - Detailed logs in `/var/log/vzdump-gpu-hook.log`
+- ✅ **One-Line Installation** - No manual configuration required
+
+---
+
+## Quick Start 🚀
+
+### One-Line Installation
 
 ```bash
 curl -sL https://raw.githubusercontent.com/alflewerken/proxmox-gpu-backup-hook/main/setup-gpu-backup-hook.sh | bash
 ```
 
-**Manual installation:**
-```bash
-wget https://raw.githubusercontent.com/alflewerken/proxmox-gpu-backup-hook/main/setup-gpu-backup-hook.sh
-chmod +x setup-gpu-backup-hook.sh
-./setup-gpu-backup-hook.sh
-```
+**That's it!** The script will:
+1. Detect your GPUs and GPU-enabled VMs
+2. Install the hook to `/usr/local/bin/backup-gpu-hook.sh`
+3. Configure `/etc/vzdump.conf`
+4. Set up log rotation
+5. Show you exactly which VMs were detected
 
-**The installer automatically:**
-- ✅ Downloads and installs the hook script
-- ✅ Configures Proxmox backup hooks
-- ✅ Sets up log rotation
-- ✅ Tests the installation
-- ✅ Scans and detects your GPU VMs
-- ✅ **No manual configuration required!**
-
----
-
-## 🎮 Usage - It Just Works!
-
-### Step 1: Install (Already Done Above)
-
-One command, fully automatic. That's it!
-
-### Step 2: Create Backup Job
-
-Configure a backup job via Proxmox WebUI:
-
-1. Navigate to **Datacenter → Backup → Add**
-2. Configure schedule (e.g., `02:00` for 2 AM)
-3. Set mode to **Stop** (already configured by installer)
-4. Select your backup storage
-5. Choose VMs to backup
-
-**The hook automatically handles all GPU conflicts!**
-
-### Step 3: Monitor (Optional)
-
-Watch the first backup to see the magic:
+### Manual Installation
 
 ```bash
-tail -f /var/log/vzdump-gpu-hook.log
-```
+# Download hook script
+wget -O /usr/local/bin/backup-gpu-hook.sh \
+  https://raw.githubusercontent.com/alflewerken/proxmox-gpu-backup-hook/main/backup-gpu-hook.sh
+chmod +x /usr/local/bin/backup-gpu-hook.sh
 
-You'll see the hook automatically:
-- Detecting VMs and their GPU assignments
-- Identifying GPU conflicts
-- Stopping/starting VMs as needed
-- Managing everything automatically
+# Add to vzdump.conf
+cat >> /etc/vzdump.conf << 'EOF'
 
----
+# GPU-Passthrough Backup Hook
+script: /usr/local/bin/backup-gpu-hook.sh
+mode: stop
+ionice: 7
+EOF
 
-## 📋 Supported Scenarios
-
-| Scenario | Status | Notes |
-|----------|--------|-------|
-| NVIDIA GPUs (GeForce, Quadro, Tesla) | ✅ Fully Automatic | Zero configuration |
-| AMD GPUs (Radeon, Instinct) | ✅ Fully Automatic | Zero configuration |
-| Intel GPUs (UHD, Arc) with SR-IOV | ✅ Fully Automatic | VFs handled correctly |
-| Multiple GPUs with different VMs | ✅ Fully Automatic | All GPU types |
-| Mixed VM/LXC environments | ✅ Fully Automatic | Containers included |
-| Dynamic VM configurations | ✅ Fully Automatic | Adapts to changes |
-| Single GPU shared by 10+ VMs | ✅ Fully Automatic | Sequential processing |
-| Adding new GPU VMs | ✅ Fully Automatic | Detected immediately |
-| Changing GPU assignments | ✅ Fully Automatic | No reconfiguration |
-
----
-
-## 🔍 How It Works
-
-### Dynamic Detection Process
-
-**Before Each Backup:**
-```
-1. Hook scans all VM/CT configurations in /etc/pve/
-2. Extracts GPU PCI addresses from hostpci settings
-3. Builds dynamic map of which VMs share which GPUs
-4. Identifies conflicts for the current backup VM
-5. Stops conflicting VMs temporarily
-6. Proceeds with backup
-7. Restarts stopped VMs after job completes
-```
-
-### Detailed Example
-
-```
-System State:
-  VM 100 (RTX 4090 @ 01:00.0) - Running
-  VM 101 (RTX 4090 @ 01:00.0) - Stopped
-  VM 102 (RTX 4090 @ 01:00.0) - Running
-  VM 110 (RTX 3090 @ 05:00.0) - Running
-
-Backup Process (Automatic):
-  
-  📊 Job Start
-     → Scan: Found VMs 100,101,102 share GPU 01:00.0
-     → Scan: Found VM 110 uses GPU 05:00.0
-     → Saved: VMs 100,102,110 were running
-  
-  📦 Backup VM 100
-     → Detected: VMs 101,102 also use GPU 01:00.0
-     → Action: Stop VM 102 (was running)
-     → Backup VM 100
-     → Success
-  
-  📦 Backup VM 101
-     → Detected: VMs 100,102 also use GPU 01:00.0
-     → Action: All already stopped
-     → Backup VM 101
-     → Success
-  
-  📦 Backup VM 102
-     → Detected: VMs 100,101 also use GPU 01:00.0
-     → Action: All already stopped
-     → Backup VM 102
-     → Success
-  
-  📦 Backup VM 110
-     → Detected: No other VMs use GPU 05:00.0
-     → Action: No conflicts, VM stays running
-     → Backup VM 110
-     → Success
-  
-  ✅ Job Complete
-     → Restart: VM 100 (was originally running)
-     → Restart: VM 102 (was originally running)
-     → VM 110 stayed running throughout
-     → VM 101 stays stopped (was not running originally)
-
-Final State (Preserved):
-  VM 100 - Running ✅
-  VM 101 - Stopped ✅
-  VM 102 - Running ✅
-  VM 110 - Running ✅
+# Set up log rotation
+cat > /etc/logrotate.d/vzdump-gpu-hook << 'EOF'
+/var/log/vzdump-gpu-hook.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+}
+EOF
 ```
 
 ---
 
-## 📊 Files and Directories
+## Configuration 📝
 
+### No Configuration Needed! 🎉
+
+Version 2.2 requires **zero manual configuration**. The script automatically:
+- Scans `/etc/pve/qemu-server/*.conf` for VM GPU assignments
+- Scans `/etc/pve/lxc/*.conf` for container GPU assignments  
+- Detects GPU conflicts before each backup
+- Groups VMs dynamically based on their current GPU assignment
+
+### vzdump.conf Settings
+
+The installation automatically adds these recommended settings:
+
+```conf
+# GPU-Passthrough Backup Hook
+script: /usr/local/bin/backup-gpu-hook.sh
+
+# Backup mode (stop required for GPU VMs)
+mode: stop
+
+# Low I/O priority (0-7, 7=lowest)
+ionice: 7
 ```
-/usr/local/bin/
-└─ backup-gpu-hook.sh              # Main hook script (v2.0)
-                                   # Automatic GPU detection
-                                   # No configuration needed
 
-/etc/
-└─ vzdump.conf                     # Proxmox backup configuration
-                                   # (hookscript reference added)
+**Optional settings:**
+```conf
+# Retention policy
+prune-backups: keep-daily=10,keep-last=10,keep-monthly=4
 
-/etc/logrotate.d/
-└─ vzdump-gpu-hook                 # Log rotation config
-                                   # (weekly rotation, 4 weeks retention)
+# Email notifications
+mailto: admin@example.com
 
-/var/log/
-└─ vzdump-gpu-hook.log            # Detailed operation log
-                                   # Shows automatic detection
-
-/tmp/
-└─ vzdump-gpu-stopped-vms.state   # Temporary state tracking
-                                   # (automatic, ephemeral)
+# Default storage
+storage: pbs-ptest
 ```
 
 ---
 
-## 🛠️ Troubleshooting
+## How It Works 🔍
 
-### Check Logs
+### Hook Phases
 
-```bash
-# View recent activity
-tail -100 /var/log/vzdump-gpu-hook.log
+Proxmox calls the hook at different backup stages:
 
-# Follow in real-time
-tail -f /var/log/vzdump-gpu-hook.log
+| Phase | When | Action |
+|-------|------|--------|
+| `job-init` | Before job | Initialization |
+| `job-start` | Job begins | Clear state file |
+| `backup-start` | Before each VM | **Stop conflicting VMs** |
+| `backup-end` | After each VM | Log completion |
+| `backup-abort` | On error | Cleanup |
+| `job-end` | Job complete | **Restart stopped VMs** |
 
-# Search for issues
-grep -E "(ERROR|WARNING)" /var/log/vzdump-gpu-hook.log
-```
-
-### Common Questions
-
-#### "How do I know it's working?"
-
-Check the log after your first backup:
-```bash
-cat /var/log/vzdump-gpu-hook.log
-```
-
-You should see entries like:
-```
-[2025-10-29 02:00:01] [backup-start] [VM 100] VM/CT 100 uses GPU 01:00.0
-[2025-10-29 02:00:01] [backup-start] [VM 100] VMs/CTs with GPU 01:00.0: 100 101 102
-[2025-10-29 02:00:01] [backup-start] [VM 100] Stopping VM/CT 102 (uses same GPU)
-```
-
-#### "Do I need to configure anything?"
-
-**No!** Version 2.0 is fully automatic. The script:
-- Scans your VMs automatically
-- Detects GPU assignments
-- Manages conflicts dynamically
-- Adapts to changes automatically
-
-#### "What if I add a new VM with GPU?"
-
-Nothing! The hook automatically detects it on the next backup. No configuration changes needed.
-
-#### "What if I change a VM's GPU?"
-
-The hook will automatically detect the change on the next backup. Zero maintenance required.
-
-### Manual Testing
-
-Test the hook manually:
+### GPU Detection Logic
 
 ```bash
-# Test basic functionality
-/usr/local/bin/backup-gpu-hook.sh job-start test-$(date +%s)
+# 1. Extract GPU from VM config
+get_vm_gpu() {
+    # Reads: hostpci0: 0000:05:00,pcie=1,x-vga=1
+    # Returns: 05:00
+}
 
-# Check what was detected
-tail -20 /var/log/vzdump-gpu-hook.log
+# 2. Find all VMs with same GPU
+find_all_vms_with_gpu() {
+    # Scans all /etc/pve/qemu-server/*.conf
+    # Returns: 102 103 104 105
+}
 
-# Simulate a VM backup (replace 100 with your VM ID)
-/usr/local/bin/backup-gpu-hook.sh backup-start 100
+# 3. Stop conflicting VMs
+stop_conflicting_vms() {
+    # Stops all except current VM
+    # Saves PIDs to state file
+}
 
-# Check the log to see what VMs were detected
-tail -10 /var/log/vzdump-gpu-hook.log
+# 4. Restart stopped VMs
+restart_stopped_vms() {
+    # Reads state file
+    # Starts all saved VMs
+}
 ```
+
+---
+
+## Testing 🧪
 
 ### Verify Installation
 
 ```bash
-# Check hook script exists and is executable
+# Check if hook is configured
+grep "^script:" /etc/vzdump.conf
+
+# Check script permissions
 ls -la /usr/local/bin/backup-gpu-hook.sh
 
-# Should show: -rwxr-xr-x
+# Test hook manually
+/usr/local/bin/backup-gpu-hook.sh backup-start stop 102
 
-# Check vzdump.conf configuration
-grep "backup-gpu-hook" /etc/vzdump.conf
+# Check logs
+tail -20 /var/log/vzdump-gpu-hook.log
+```
 
-# Should show: script: /usr/local/bin/backup-gpu-hook.sh
+### Test Backup
 
-# Test hook execution
+```bash
+# Backup single VM
+vzdump 102 --storage pbs-ptest --mode stop --notes-template 'Test Backup'
+
+# Check if conflicting VMs were stopped and restarted
+tail -50 /var/log/vzdump-gpu-hook.log
+```
+
+**Expected log output:**
+```log
+[2025-11-04 09:08:02] [job-start] === Backup job starting ===
+[2025-11-04 09:08:02] [backup-start] [VM 102] VM/CT 102 uses GPU 05:00
+[2025-11-04 09:08:02] [backup-start] [VM 102] VMs/CTs with GPU 05:00: 102 103 104 105
+[2025-11-04 09:08:03] [backup-start] [VM 102] Stopping VM/CT 104
+[2025-11-04 09:15:30] [backup-end] [VM 102] Backup completed
+[2025-11-04 09:15:30] [job-end] === Backup job completed ===
+[2025-11-04 09:15:30] [job-end] Restarting stopped VMs/Containers
+[2025-11-04 09:15:30] [job-end] Starting VM 104
+```
+
+---
+
+## Troubleshooting 🔧
+
+### Hook not being called
+
+**Symptoms:**
+- No entries in `/var/log/vzdump-gpu-hook.log`
+- VMs not being stopped
+
+**Solution:**
+```bash
+# Verify hook is configured
+grep "^script:" /etc/vzdump.conf
+
+# Check permissions
+chmod +x /usr/local/bin/backup-gpu-hook.sh
+
+# Test manually
 /usr/local/bin/backup-gpu-hook.sh job-start test
+cat /var/log/vzdump-gpu-hook.log
+```
+
+### VMID shows as "stop" (Version 2.0-2.1 bug)
+**Symptoms:**
+```log
+[backup-start] [VM stop] VM/CT stop has no GPU-Passthrough configuration
+```
+
+**Cause:** Old hook version before v2.2 bugfix
+
+**Solution:**
+```bash
+# Update to version 2.2
+cd /usr/local/bin
+mv backup-gpu-hook.sh backup-gpu-hook.sh.old
+wget https://raw.githubusercontent.com/alflewerken/proxmox-gpu-backup-hook/main/backup-gpu-hook.sh
+chmod +x backup-gpu-hook.sh
+```
+
+### VMs not restarting after backup
+
+**Symptoms:**
+- VMs remain stopped after backup
+- State file still exists: `/tmp/vzdump-gpu-stopped-vms.state`
+
+**Solution:**
+```bash
+# Check state file
+cat /tmp/vzdump-gpu-stopped-vms.state
+
+# Manually restart VMs
+for vm in $(cat /tmp/vzdump-gpu-stopped-vms.state); do
+    qm start $vm
+done
+
+# Cleanup
+rm -f /tmp/vzdump-gpu-stopped-vms.state
+```
+
+### GPU in D3cold Power State
+
+**Symptoms:**
+```
+error writing '1' to '/sys/bus/pci/devices/0000:05:00.0/reset'
+kvm: pci_irq_handler: Assertion failed
+Unable to change power state from D3cold to D0
+```
+
+**Diagnosis:**
+```bash
+# Check GPU status
+lspci -D | grep -i nvidia
+dmesg | tail -20
+
+# Check power state
+cat /sys/bus/pci/devices/0000:05:00.1/power_state
+```
+
+**Solution:**
+```bash
+# Only reliable solution for D3cold
+reboot
 ```
 
 ---
 
-## 🔄 Upgrading from Version 1.0
+## Supported Hardware 💻
 
-If you're upgrading from version 1.0 with manual GPU groups:
+### Tested GPUs
+
+- ✅ NVIDIA RTX 4090
+- ✅ NVIDIA RTX 3090 Ti
+- ✅ NVIDIA RTX 3080
+- ✅ Intel UHD Graphics 770 (SR-IOV)
+- ✅ AMD Radeon RX 6800 XT
+
+### Tested Proxmox Versions
+
+- ✅ Proxmox VE 8.x
+- ✅ Proxmox VE 7.x
+- ✅ Proxmox Backup Server (PBS)
+
+---
+
+## Advanced Usage 🎓
+
+### Multiple GPU Groups
+
+The script automatically handles multiple different GPUs:
 
 ```bash
-# Download new installer
-wget https://raw.githubusercontent.com/alflewerken/proxmox-gpu-backup-hook/main/setup-gpu-backup-hook.sh
+# RTX 4090 at 01:00
+VMs 100, 101, 102 → GPU 01:00.0
 
-# Backup your old config (optional - v2.0 doesn't use it anyway)
-cp /usr/local/bin/backup-gpu-hook.sh /usr/local/bin/backup-gpu-hook.sh.v1-backup
+# RTX 3090 Ti at 05:00
+VMs 103, 104, 105 → GPU 05:00.0
 
-# Run installer (will upgrade automatically)
-chmod +x setup-gpu-backup-hook.sh
-./setup-gpu-backup-hook.sh
-
-# That's it! No configuration migration needed.
+# Intel UHD at 00:02.1
+VMs 200, 201 → GPU 00:02.1
 ```
 
-**Benefits of upgrading:**
-- ✅ Remove all manual GPU group configurations
-- ✅ Automatic detection of all VMs
-- ✅ No maintenance when VMs change
-- ✅ Support for containers (LXC)
-- ✅ Better error handling
+No configuration needed - the script detects and groups automatically!
 
----
+### Scheduled Backups
 
-## 🖥️ Real-World Examples
+In Proxmox WebUI: **Datacenter → Backup → Add**
 
-### Example 1: Home Lab with Multiple GPUs
-
-**Hardware:**
-- Intel UHD 770 with SR-IOV (7 VFs)
-- NVIDIA RTX 4090
-- NVIDIA RTX 3090 Ti
-
-**VMs:**
-- 12 VMs total
-- 3 VMs share RTX 4090
-- 6 VMs share RTX 3090 Ti
-- 3 VMs use Intel UHD VFs
-
-**Configuration Required:**
-```bash
-# Version 2.0:
-None! Fully automatic.
-
-# Version 1.0 would need:
-GPU_GROUPS["01:00.0"]="100 101 102"      # RTX 4090
-GPU_GROUPS["05:00.0"]="104 105 106 107 108 112"  # RTX 3090 Ti
-GPU_GROUPS["00:02.1"]="200"
-GPU_GROUPS["00:02.2"]="201"
-GPU_GROUPS["00:02.3"]="202"
-# ... 4 more lines!
+```
+Schedule: 02:00
+Mode: stop (already configured in vzdump.conf)
+Storage: pbs-ptest
+Selection: All
+Exclude: 100 (non-GPU VMs)
+Prune: keep-daily=10,keep-last=10,keep-monthly=4
+Notes: {{guestname}}
 ```
 
-### Example 2: AI/ML Workstation Farm
-
-**Hardware:**
-- 4× NVIDIA RTX 4090
-- 16 VMs (4 per GPU)
-
-**Scenario:**
-- Frequent VM creation/deletion
-- GPU reassignments for different workloads
-- Mix of Ubuntu and Windows VMs
-
-**Version 2.0 Advantage:**
-No configuration updates needed when:
-- Creating new VMs
-- Deleting old VMs  
-- Moving VMs between GPUs
-- Changing GPU assignments
-
-Everything detected automatically!
-
-### Example 3: Development Environment
-
-**Hardware:**
-- 1× AMD Radeon RX 7900 XTX
-- 5 VMs sharing the GPU
-
-**Use Case:**
-- Dev/Test/Staging/Production/Demo VMs
-- VMs often started/stopped manually
-- Different VMs running at different times
-
-**Version 2.0 Benefit:**
-Hook preserves original VM states:
-- Running VMs restart after backup
-- Stopped VMs stay stopped
-- No manual VM management needed
-
----
-
-## 📝 Requirements
-
-- **Proxmox VE**: Version 7.x or 8.x
-- **Shell**: Bash 4.0 or higher (standard on Proxmox)
-- **Permissions**: Root access for installation
-- **VMs**: Using GPU passthrough (`hostpci` parameter)
-- **Backup Mode**: Will automatically set to `stop` mode
-- **Internet**: For initial installation (downloads script)
-
-**No other dependencies!** Works with standard Proxmox installation.
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Whether it's bug reports, feature requests, or code improvements.
-
-### Ways to Contribute
-
-1. **⭐ Star the Repository**: Help others discover this solution
-2. **🐛 Report Issues**: [Open an issue](https://github.com/alflewerken/proxmox-gpu-backup-hook/issues)
-3. **💡 Suggest Features**: Share your ideas for improvements
-4. **🔧 Submit Pull Requests**: Code improvements are appreciated
-5. **📖 Improve Documentation**: Help make the docs even better
-6. **💬 Share Your Experience**: Write about your setup and results
-
-### Development Setup
+### Monitoring
 
 ```bash
-# Clone repository
-git clone https://github.com/alflewerken/proxmox-gpu-backup-hook.git
-cd proxmox-gpu-backup-hook
-
-# Test on your Proxmox server
-scp setup-gpu-backup-hook.sh root@your-proxmox-server:/tmp/
-ssh root@your-proxmox-server
-cd /tmp && ./setup-gpu-backup-hook.sh
-
-# Review logs
+# Watch logs in real-time
 tail -f /var/log/vzdump-gpu-hook.log
+
+# Check for errors
+grep "ERROR\|ABORT" /var/log/vzdump-gpu-hook.log
+
+# Daily error check (cron)
+0 8 * * * grep "ERROR\|ABORT" /var/log/vzdump-gpu-hook.log && \
+          mail -s "Backup Errors" admin@example.com
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+---
+
+## Migration Guide 📦
+
+### From Version 1.x to 2.2
+
+**Version 1.x (Manual configuration):**
+```bash
+# Old: Manual GPU groups
+declare -A GPU_GROUPS
+GPU_GROUPS["05:00"]="102 103 104 105"
+GPU_GROUPS["01:00"]="100 101"
+```
+
+**Version 2.2 (Automatic):**
+```bash
+# New: Zero configuration!
+# Script auto-detects all GPU assignments
+```
+
+**Migration steps:**
+1. Backup old script: `cp /usr/local/bin/backup-gpu-hook.sh{,.v1-backup}`
+2. Download v2.2: `wget -O /usr/local/bin/backup-gpu-hook.sh https://raw.githubusercontent.com/alflewerken/proxmox-gpu-backup-hook/main/backup-gpu-hook.sh`
+3. Make executable: `chmod +x /usr/local/bin/backup-gpu-hook.sh`
+4. Test: `vzdump 102 --storage pbs-ptest --mode stop`
+5. Verify logs: `tail -20 /var/log/vzdump-gpu-hook.log`
+
+### From Version 2.0-2.1 to 2.2
+
+**Critical fix:** VMID parsing for `--mode stop`
+
+Simply update the script:
+```bash
+cd /usr/local/bin
+mv backup-gpu-hook.sh backup-gpu-hook.sh.v2.0
+wget https://raw.githubusercontent.com/alflewerken/proxmox-gpu-backup-hook/main/backup-gpu-hook.sh
+chmod +x backup-gpu-hook.sh
+```
 
 ---
 
-## 📜 License
+## FAQ ❓
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+### Does this work with snapshot backups?
 
-**TL;DR:** 
-- ✅ Free to use for personal and commercial purposes
-- ✅ Modify and distribute freely
-- ✅ No warranty provided (use at your own risk)
+**No.** Proxmox cannot create snapshots of VMs with PCI passthrough. The `mode: stop` setting is required for GPU VMs.
 
----
+### What happens if the script crashes during backup?
 
-## 💡 Background & Motivation
+The state file (`/tmp/vzdump-gpu-stopped-vms.state`) persists. VMs must be manually restarted:
+```bash
+for vm in $(cat /tmp/vzdump-gpu-stopped-vms.state); do qm start $vm; done
+```
 
-This script was born from real frustration managing a Proxmox homelab with multiple VMs sharing GPUs. After countless failed backup jobs and manual VM management, I decided to automate what should have been automatic.
+### Can I exclude specific VMs from the hook?
 
-**Version 1.0** solved the problem but required manual configuration - easy to forget VMs or make mistakes when adding new ones.
+Yes, use `--exclude` in your backup job or vzdump.conf:
+```bash
+vzdump --all 1 --exclude 100,200 --storage pbs-ptest
+```
 
-**Version 2.0** achieves the original vision: **Make Proxmox backups "just work" with GPU passthrough - automatically!**
+### Does this support Intel SR-IOV?
 
-### The Journey
+Yes! The script detects all PCI devices, including Intel UHD Graphics Virtual Functions (VFs).
 
-- **2019**: Started using Proxmox for AI/ML workstations
-- **2020-2024**: Managed GPU conflicts manually (painful!)
-- **October 2024**: Built v1.0 with manual GPU groups
-- **October 2025**: Released v2.0 with full automation
+### How long does stopping/starting VMs take?
 
-If you're running:
-- 🎮 Gaming VMs
-- 🤖 AI/ML workstations
-- 🎨 Rendering farms
-- 💻 Development environments
-- 🏠 Any homelab with GPU passthrough
-
-This hook will save you the headache I went through building and managing these systems.
+Typical timings:
+- VM Stop: 2-5 seconds
+- VM Start: 5-15 seconds
+- Hook Overhead: <1 second per VM
 
 ---
 
-## 🙏 Acknowledgments
+## Best Practices 🏆
 
-- **Proxmox VE Team** - For the excellent virtualization platform
-- **The Proxmox Community** - For sharing knowledge and troubleshooting
-- **GPU Passthrough Pioneers** - For documenting the complex setup process
-- **Early Adopters** - For testing and feedback on v1.0
-- **Contributors** - For improvements and bug reports
+### 1. Backup Windows
+
+- Schedule backups at night (02:00-06:00)
+- Stagger GPU VM backups from non-GPU VMs
+- Example:
+  - 02:00 → GPU VMs
+  - 03:00 → Regular VMs
+
+### 2. Retention Policies
+
+```conf
+# Production VMs
+prune-backups: keep-daily=10,keep-weekly=4,keep-monthly=6,keep-yearly=2
+
+# Dev/Test VMs
+prune-backups: keep-daily=7,keep-last=7,keep-monthly=3
+```
+
+### 3. Monitoring
+
+```bash
+# Daily check for backup errors
+cat > /etc/cron.daily/check-backup-errors << 'EOF'
+#!/bin/bash
+ERRORS=$(grep -c "ERROR\|ABORT" /var/log/vzdump-gpu-hook.log)
+if [ $ERRORS -gt 0 ]; then
+    tail -50 /var/log/vzdump-gpu-hook.log | \
+    mail -s "Backup Errors: $ERRORS found" admin@example.com
+fi
+EOF
+chmod +x /etc/cron.daily/check-backup-errors
+```
+
+### 4. Testing Strategy
+
+**Phase 1 - Single VM:**
+```bash
+vzdump 102 --storage pbs-ptest --mode stop
+```
+
+**Phase 2 - All GPU VMs:**
+```bash
+vzdump 102 103 104 105 --storage pbs-ptest --mode stop
+```
+
+**Phase 3 - Recovery Test:**
+```bash
+qmrestore pbs-ptest:backup-vm-102-2025_11_04.vma.zst 999 --storage local-btrfs
+qm start 999
+```
+
+**Phase 4 - Automation:**
+- Enable scheduled backup
+- Monitor logs for first week
+- Verify restore periodically
 
 ---
 
-## 💬 About the Author
+## Performance Tips ⚡
 
-> *"After managing datacenter infrastructure for 30+ years (SGI, Sun, IBM) and building multiple AI workstation companies, I know what it's like to fight with hardware passthrough. This hook is my contribution to making life easier for fellow sysadmins and homelab enthusiasts."*
->
-> *- Alf Lewerken, System Administrator & Proxmox user since 2019*
+### I/O Throttling
 
-**Tech Background:**
-- 30+ years in system administration
-- Former SGI, Sun Microsystems, IBM datacenter experience
-- Built and sold AI workstation companies
-- Aviation engineer (develops aerobatic aircraft!)
-- Maintains vintage SGI systems (Octane2, Indigo)
+```conf
+# In vzdump.conf
+ionice: 7          # Lowest I/O priority
+bwlimit: 50000     # Bandwidth limit in KB/s (optional)
+```
 
----
+### Parallel Backups
 
-## 📚 Additional Resources
+⚠️ **Not recommended for GPU VMs!** Only one VM per GPU can run at a time.
 
-- **GitHub Repository**: https://github.com/alflewerken/proxmox-gpu-backup-hook
-- **Issue Tracker**: https://github.com/alflewerken/proxmox-gpu-backup-hook/issues
-- **Changelog**: [CHANGELOG.md](CHANGELOG.md)
-- **Contributing Guide**: [CONTRIBUTING.md](CONTRIBUTING.md)
-- **Proxmox Documentation**: https://pve.proxmox.com/wiki/Backup_and_Restore
-- **GPU Passthrough Guide**: https://pve.proxmox.com/wiki/PCI_Passthrough
+For non-GPU VMs:
+```conf
+performance: max-workers=4,pbs-entries-max=256
+```
 
 ---
 
-## 🔗 Quick Links
+## Contributing 🤝
 
-| Resource | Link |
-|----------|------|
-| 📦 Installation Script | [setup-gpu-backup-hook.sh](setup-gpu-backup-hook.sh) |
-| 🔧 Hook Script | [backup-gpu-hook.sh](backup-gpu-hook.sh) |
-| 📝 Changelog | [CHANGELOG.md](CHANGELOG.md) |
-| 🤝 Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| 📜 License | [LICENSE](LICENSE) |
-| 🐛 Report Bug | [New Issue](https://github.com/alflewerken/proxmox-gpu-backup-hook/issues/new) |
-| 💬 Discussions | [GitHub Discussions](https://github.com/alflewerken/proxmox-gpu-backup-hook/discussions) |
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 
----
+### Reporting Bugs
 
-<p align="center">
-  <b>Made with ❤️ by <a href="https://github.com/alflewerken">Alf Lewerken</a></b><br>
-  <i>From a Proxmox admin for Proxmox admins</i><br><br>
-  <b>⭐ If this hook saved your backups, please star the repository! ⭐</b>
-</p>
+Please include:
+1. Proxmox version: `pveversion`
+2. Hook version: `head -15 /usr/local/bin/backup-gpu-hook.sh`
+3. VM configs: `cat /etc/pve/qemu-server/XXX.conf`
+4. Logs: `tail -50 /var/log/vzdump-gpu-hook.log`
+5. GPU info: `lspci | grep -i vga`
 
 ---
 
-## 📈 Project Stats
+## Changelog 📋
 
-![GitHub release (latest by date)](https://img.shields.io/github/v/release/alflewerken/proxmox-gpu-backup-hook)
-![GitHub last commit](https://img.shields.io/github/last-commit/alflewerken/proxmox-gpu-backup-hook)
-![GitHub](https://img.shields.io/github/license/alflewerken/proxmox-gpu-backup-hook)
-![GitHub contributors](https://img.shields.io/github/contributors/alflewerken/proxmox-gpu-backup-hook)
+See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 
-**Support the project:**  
-If you find this useful, give it a ⭐ and share it with others who might benefit!
+### Quick Summary
+
+- **v2.2 (2025-11-04)** - Critical fix: VMID parsing for `--mode stop`
+- **v2.1 (2025-10-30)** - Improved abort handling, container support
+- **v2.0 (2025-10-26)** - Dynamic GPU detection, zero configuration
+- **v1.0 (2025-10-01)** - Initial release with manual GPU groups
+
+---
+
+## License 📄
+
+MIT License - see [LICENSE](LICENSE) for details
+
+Copyright (c) 2025 Alf Lewerken
+
+---
+
+## Support ⭐
+
+If this project helped you, please consider:
+
+- ⭐ Starring the repository
+- 🐛 Reporting bugs and suggesting features
+- 📖 Improving documentation
+- 💬 Sharing your experience in discussions
+
+---
+
+## Credits 🙏
+
+**Author:** Alf Lewerken
+
+**Tested with:**
+- Multiple NVIDIA RTX 4090/3090 Ti setups
+- Intel UHD Graphics SR-IOV configurations
+- Proxmox VE 8.x clusters
+- Real-world production environments
+
+**Special thanks:**
+- Proxmox VE Community
+- Claude AI (Anthropic) for debugging assistance
+- Beta testers from the Proxmox forums
+
+---
+
+## Links 🔗
+
+- **GitHub:** https://github.com/alflewerken/proxmox-gpu-backup-hook
+- **Issues:** https://github.com/alflewerken/proxmox-gpu-backup-hook/issues
+- **Discussions:** https://github.com/alflewerken/proxmox-gpu-backup-hook/discussions
+- **Proxmox Forum:** https://forum.proxmox.com/
+
+---
+
+**Made with ❤️ by a Proxmox admin, for Proxmox admins**

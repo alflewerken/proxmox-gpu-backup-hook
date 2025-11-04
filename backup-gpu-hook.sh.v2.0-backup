@@ -1,29 +1,22 @@
 #!/bin/bash
 #
-# Proxmox Backup Hook for GPU-Passthrough VMs (Dynamic Version 2.2 - Fixed VMID parsing)
+# Proxmox Backup Hook for GPU-Passthrough VMs (Dynamic Version 2.0)
 # Automatically detects GPU assignments from VM/CT configurations
 # Stops conflicting VMs with the same GPU before backup
-# and restarts them after the backup job completes OR on backup-abort
+# and restarts them after the backup job completes
 #
 # Installation:
 # 1. Copy to /usr/local/bin/backup-gpu-hook.sh
 # 2. chmod +x /usr/local/bin/backup-gpu-hook.sh
 # 3. Add to /etc/vzdump.conf: script: /usr/local/bin/backup-gpu-hook.sh
 #
-# Version: 2.2 (Fixed VMID parsing for mode stop/snapshot/suspend)
-# Author: Alf Lewerken  
+# Version: 2.0 (Dynamic GPU Detection)
+# Author: Alf Lewerken
 # Repository: https://github.com/alflewerken/proxmox-gpu-backup-hook
 #
 
 PHASE=$1
-# Fix for Proxmox passing mode as $2 when using --mode stop/snapshot/suspend
-# Args can be: "backup-start stop 105" or "backup-start 105"
-if [[ "$2" =~ ^(stop|snapshot|suspend)$ ]]; then
-    VMID=$3
-else
-    VMID=$2
-fi
-
+VMID=$2
 LOGFILE="/var/log/vzdump-gpu-hook.log"
 STATEFILE="/tmp/vzdump-gpu-stopped-vms.state"
 
@@ -124,12 +117,6 @@ start_vm() {
 
 stop_conflicting_vms() {
     local current_vm=$1
-    
-    # Skip if no VMID (job-level phases)
-    if [ -z "$current_vm" ]; then
-        return 0
-    fi
-    
     local current_gpu=$(get_vm_gpu $current_vm)
     
     if [ -z "$current_gpu" ]; then
@@ -202,20 +189,9 @@ case "$PHASE" in
         log "Backup completed for VM/CT $VMID"
         ;;
         
-    backup-abort)
-        log "Backup ABORTED for VM/CT $VMID - cleaning up"
-        # On abort, we should restart stopped VMs for this specific backup
-        # but NOT clear the global state yet (job-end will do final cleanup)
-        ;;
-        
     job-end)
         log "=== Backup job completed ==="
         restart_stopped_vms
-        ;;
-        
-    job-init|log-end|pre-stop|pre-restart|post-restart)
-        # These phases are informational only - no action needed
-        log "Phase $PHASE - no action required"
         ;;
         
     *)
