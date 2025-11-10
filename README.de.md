@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Proxmox](https://img.shields.io/badge/Proxmox-7.x%20%7C%208.x-orange.svg)](https://www.proxmox.com/)
 [![Bash](https://img.shields.io/badge/Bash-4.0%2B-green.svg)](https://www.gnu.org/software/bash/)
-[![Version](https://img.shields.io/badge/Version-2.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-2.4-blue.svg)](CHANGELOG.md)
 [![GitHub issues](https://img.shields.io/github/issues/alflewerken/proxmox-gpu-backup-hook)](https://github.com/alflewerken/proxmox-gpu-backup-hook/issues)
 [![GitHub stars](https://img.shields.io/github/stars/alflewerken/proxmox-gpu-backup-hook?style=social)](https://github.com/alflewerken/proxmox-gpu-backup-hook/stargazers)
 
@@ -13,15 +13,27 @@
 
 > **"Von einem Proxmox-Admin für Proxmox-Admins"**
 >
-> Nach stundenlangen fehlgeschlagenen Backup-Jobs habe ich diesen Hook entwickelt. Version 2.0 macht es noch einfacher - **vollautomatische GPU-Erkennung, keine Konfiguration nötig!**
+> Nach stundenlangen fehlgeschlagenen Backup-Jobs habe ich diesen Hook entwickelt. Version 2.4 behebt kritische Fehler aus der Praxis - **VMs starten jetzt auch nach Backup-Fehlern zuverlässig neu!**
 
-## 🆕 Neu in Version 2.0
+## 🆕 Neu in Version 2.4
 
-✨ **Null-Konfigurations-Installation** - Keine manuelle GPU-Gruppen-Einrichtung  
-✨ **Dynamische GPU-Erkennung** - Scannt automatisch alle VM-Konfigurationen  
-✨ **Zukunftssicher** - Passt sich automatisch an wenn VMs hinzugefügt/entfernt werden  
-✨ **Container-Support** - Funktioniert mit VMs und LXC-Containern  
-✨ **Intelligentes Scanning** - Erkennt GPU-Sharing automatisch vor jedem Backup  
+🔥 **KRITISCHER FIX: Race Condition** - VMs starten nach Backup-Fehlern wieder  
+🔥 **KRITISCHER FIX: Backup-Abort** - VMs starten auch bei Backup-Abbruch neu  
+✨ **Zuverlässiger Restart** - Alle VMs werden korrekt erfasst, keine Status-Checks  
+✨ **Guest-Agent unabhängig** - Funktioniert perfekt ohne qemu-guest-agent  
+✨ **Produktions-getestet** - Behebt reale Probleme aus Produktionsumgebungen
+
+**Das Problem (Behoben in v2.4):**
+```bash
+# Race Condition Timeline:
+# T1: vzdump startet VM-Shutdown
+# T2: Hook prüft is_vm_running() → false (bereits am Herunterfahren)
+# T3: VM wird nicht für Restart aufgezeichnet
+# T4: Backup schlägt fehl → VM bleibt gestoppt ❌
+
+# v2.4 Fix:
+# VMs werden immer für Restart aufgezeichnet, keine Status-Checks ✅
+# Funktioniert mit allen Backup-Modi und Fehlerszenarien ✅  
 
 ---
 

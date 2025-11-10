@@ -1,12 +1,15 @@
 #!/bin/bash
 #
-# Proxmox GPU Backup Hook - Automatic Installation (Version 2.0.1)
+# Proxmox GPU Backup Hook - Automatic Installation (Version 2.4.0)
 # For servers with GPU-Passthrough VMs
 #
 # Solves the problem: VMs with shared GPUs cannot run simultaneously
 # and are skipped during backup.
 #
-# NEW in Version 2.0:
+# NEW in Version 2.4:
+# - CRITICAL FIX: Race condition causing VMs not to restart after backup
+# - CRITICAL FIX: VMs now restart even after backup-abort/failure
+# - Works reliably without qemu-guest-agent
 # - Fully automatic GPU detection - NO manual configuration needed!
 # - Dynamic VM scanning - adapts automatically to VM changes
 # - Zero-configuration installation
@@ -31,7 +34,7 @@ NC='\033[0m' # No Color
 HOOK_SCRIPT="/usr/local/bin/backup-gpu-hook.sh"
 VZDUMP_CONF="/etc/vzdump.conf"
 LOGFILE="/var/log/vzdump-gpu-hook.log"
-VERSION="2.0"
+VERSION="2.4.0"
 
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}Proxmox GPU Backup Hook Setup v${VERSION}${NC}"
