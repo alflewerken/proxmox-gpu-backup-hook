@@ -1,21 +1,23 @@
 #!/bin/bash
 #
-# Proxmox Backup Hook for GPU-Passthrough VMs (Version 2.4 - FIXED Race Condition)
-# FIXES: VMs not restarting after backup-abort or when backup mode 'stop' starts shutdown early
+# Proxmox Backup Hook for GPU-Passthrough VMs (Dynamic Version 2.2 - Fixed VMID parsing)
+# Automatically detects GPU assignments from VM/CT configurations
+# Stops conflicting VMs with the same GPU before backup
+# and restarts them after the backup job completes OR on backup-abort
 #
 # Installation:
-# 1. cp backup-gpu-hook-v2.4-FIXED.sh /usr/local/bin/backup-gpu-hook.sh
+# 1. Copy to /usr/local/bin/backup-gpu-hook.sh
 # 2. chmod +x /usr/local/bin/backup-gpu-hook.sh
 # 3. Add to /etc/vzdump.conf: script: /usr/local/bin/backup-gpu-hook.sh
 #
-# Changelog v2.4:
-# - FIXED: Race condition where vzdump starts shutdown before hook records VM state
-# - FIXED: VMs not restarting after backup-abort
-# - Changed: Always record VMs in backup-start, don't check if running
-# - Changed: Add VM to restart list on backup-abort
+# Version: 2.2 (Fixed VMID parsing for mode stop/snapshot/suspend)
+# Author: Alf Lewerken  
+# Repository: https://github.com/alflewerken/proxmox-gpu-backup-hook
 #
 
 PHASE=$1
+# Fix for Proxmox passing mode as $2 when using --mode stop/snapshot/suspend
+# Args can be: "backup-start stop 105" or "backup-start 105"
 if [[ "$2" =~ ^(stop|snapshot|suspend)$ ]]; then
     VMID=$3
 else
@@ -24,7 +26,6 @@ fi
 
 LOGFILE="/var/log/vzdump-gpu-hook.log"
 STATEFILE="/tmp/vzdump-gpu-stopped-vms.state"
-ORIGINAL_STATE_FILE="/tmp/vzdump-original-running-vms.state"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$PHASE] [VM $VMID] $1" >> "$LOGFILE"
@@ -34,6 +35,7 @@ get_vm_gpu() {
     local vmid=$1
     local gpu=""
     
+    # Check qemu-server first (VMs)
     if [ -f "/etc/pve/qemu-server/${vmid}.conf" ]; then
         gpu=$(grep "^hostpci" /etc/pve/qemu-server/${vmid}.conf 2>/dev/null | \
               head -1 | \
@@ -41,6 +43,7 @@ get_vm_gpu() {
               sed 's/^0000://')
     fi
     
+    # If empty, check lxc (Containers)
     if [ -z "$gpu" ] && [ -f "/etc/pve/lxc/${vmid}.conf" ]; then
         gpu=$(grep "^lxc.cgroup2.devices.allow" /etc/pve/lxc/${vmid}.conf 2>/dev/null | \
               head -1 | \
@@ -54,6 +57,7 @@ find_all_vms_with_gpu() {
     local target_gpu=$1
     local vms=()
     
+    # Search all VMs
     for conf in /etc/pve/qemu-server/*.conf; do
         [ -f "$conf" ] || continue
         local vmid=$(basename "$conf" .conf)
@@ -64,6 +68,7 @@ find_all_vms_with_gpu() {
         fi
     done
     
+    # Search all Containers
     for conf in /etc/pve/lxc/*.conf; do
         [ -f "$conf" ] || continue
         local ctid=$(basename "$conf" .conf)
@@ -80,11 +85,13 @@ find_all_vms_with_gpu() {
 is_vm_running() {
     local vmid=$1
     
+    # Check if it's a VM
     if [ -f "/etc/pve/qemu-server/${vmid}.conf" ]; then
         qm status $vmid 2>/dev/null | grep -q "running"
         return $?
     fi
     
+    # Check if it's a Container
     if [ -f "/etc/pve/lxc/${vmid}.conf" ]; then
         pct status $vmid 2>/dev/null | grep -q "running"
         return $?
@@ -115,25 +122,10 @@ start_vm() {
     fi
 }
 
-record_original_state() {
-    local vmid=$1
-    
-    # Skip if no VMID
-    if [ -z "$vmid" ]; then
-        return 0
-    fi
-    
-    # FIXED v2.4: Always record VMs for restart
-    # Don't check if running - vzdump may have already started shutdown
-    # If backup mode is 'stop', vzdump WILL stop the VM, so we MUST restart it
-    # Race condition: backup-start hook is called AFTER vzdump begins shutdown
-    log "VM/CT $vmid recorded for restart after backup (mode: stop/suspend)"
-    echo "$vmid" >> "$ORIGINAL_STATE_FILE"
-}
-
 stop_conflicting_vms() {
     local current_vm=$1
     
+    # Skip if no VMID (job-level phases)
     if [ -z "$current_vm" ]; then
         return 0
     fi
@@ -147,6 +139,7 @@ stop_conflicting_vms() {
     
     log "VM/CT $current_vm uses GPU $current_gpu"
     
+    # Dynamically find all VMs/CTs with the same GPU
     local conflicting_vms=$(find_all_vms_with_gpu "$current_gpu")
     
     if [ -z "$conflicting_vms" ]; then
@@ -156,6 +149,7 @@ stop_conflicting_vms() {
     
     log "VMs/CTs with GPU $current_gpu: $conflicting_vms"
     
+    # Stop all running VMs/CTs except the current one
     for vm in $conflicting_vms; do
         if [ "$vm" = "$current_vm" ]; then
             continue
@@ -163,6 +157,7 @@ stop_conflicting_vms() {
         
         if is_vm_running $vm; then
             log "Stopping VM/CT $vm (uses same GPU $current_gpu)"
+            # Remember that this VM was originally running
             echo "$vm" >> "$STATEFILE"
             stop_vm $vm
             sleep 2
@@ -171,48 +166,35 @@ stop_conflicting_vms() {
 }
 
 restart_stopped_vms() {
-    # Merge both state files and remove duplicates
-    local all_vms_to_restart=""
-    
-    if [ -f "$ORIGINAL_STATE_FILE" ]; then
-        all_vms_to_restart=$(cat "$ORIGINAL_STATE_FILE")
-    fi
-    
-    if [ -f "$STATEFILE" ]; then
-        all_vms_to_restart="$all_vms_to_restart$(echo)
-$(cat $STATEFILE)"
-    fi
-    
-    if [ -z "$all_vms_to_restart" ]; then
+    if [ ! -f "$STATEFILE" ]; then
         log "No stopped VMs to restart"
         return 0
     fi
     
     log "Restarting stopped VMs/Containers"
     
-    # Remove duplicates and restart
-    echo "$all_vms_to_restart" | sort -u | while IFS= read -r vmid; do
+    # Read all stopped VMs and start them (without duplicates)
+    sort -u "$STATEFILE" | while IFS= read -r vmid; do
         if [ -n "$vmid" ]; then
             start_vm $vmid
             sleep 2
         fi
     done
     
-    # Delete state files
-    rm -f "$STATEFILE" "$ORIGINAL_STATE_FILE"
+    # Delete state file
+    rm -f "$STATEFILE"
     log "All stopped VMs/Containers have been restarted"
 }
 
 case "$PHASE" in
     job-start)
         log "=== Backup job starting ==="
-        rm -f "$STATEFILE" "$ORIGINAL_STATE_FILE"
+        # Delete old state file if present
+        rm -f "$STATEFILE"
         ;;
         
     backup-start)
         log "Backup starting for VM/CT $VMID"
-        # Record VM for restart (vzdump will stop it)
-        record_original_state $VMID
         stop_conflicting_vms $VMID
         ;;
         
@@ -221,11 +203,9 @@ case "$PHASE" in
         ;;
         
     backup-abort)
-        log "Backup ABORTED for VM/CT $VMID - ensuring restart"
-        # FIXED v2.4: Ensure VM is in restart list even on abort
-        if [ -n "$VMID" ]; then
-            echo "$VMID" >> "$ORIGINAL_STATE_FILE"
-        fi
+        log "Backup ABORTED for VM/CT $VMID - cleaning up"
+        # On abort, we should restart stopped VMs for this specific backup
+        # but NOT clear the global state yet (job-end will do final cleanup)
         ;;
         
     job-end)
@@ -234,6 +214,7 @@ case "$PHASE" in
         ;;
         
     job-init|log-end|pre-stop|pre-restart|post-restart)
+        # These phases are informational only - no action needed
         log "Phase $PHASE - no action required"
         ;;
         

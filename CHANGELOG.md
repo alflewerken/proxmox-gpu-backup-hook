@@ -7,6 +7,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.4.0] - 2025-11-10
+
+### 🔥 Critical Fix - Race Condition & Backup-Abort Handling
+
+This release fixes a critical race condition that prevented VMs from restarting after backup failures or aborts. **If you're using any previous version, upgrade immediately to prevent VMs from staying stopped after backup errors!**
+
+### 🐛 Critical Fixes
+
+- **CRITICAL: Fixed race condition in `record_original_state()`**
+  - vzdump begins VM shutdown BEFORE hook's `backup-start` phase executes
+  - Previous versions checked `is_vm_running()` which returned false (VM already shutting down)
+  - Result: VMs not added to restart list, stayed stopped after backup
+  - **Impact:** VMs without qemu-guest-agent or with backup timeouts never restarted automatically
+  - **Symptoms:** Log missing `"VM/CT XXX is currently running - recording for restart"` line
+  
+- **CRITICAL: Fixed missing VM restart after `backup-abort`**
+  - When backups failed/aborted, VMs were not added to restart list
+  - Previous versions did nothing in `backup-abort` phase
+  - Result: VMs stayed stopped after backup failures
+  - **Impact:** Any backup failure left VMs in stopped state
+  
+### ✨ Added
+
+- **Unconditional VM Recording**: All VMs now recorded for restart in `backup-start`, regardless of current state
+- **Backup-Abort Handling**: VMs explicitly added to restart list when backups abort/fail
+- **Enhanced Logging**: Clear indication when VMs recorded for restart
+
+### 🔄 Changed
+
+- **Improved**: `record_original_state()` now always records VMs without status check:
+  ```bash
+  # Before (v2.3) - BROKEN with race condition:
+  if is_vm_running $vmid; then
+      echo "$vmid" >> "$ORIGINAL_STATE_FILE"
+  fi
+  
+  # After (v2.4) - FIXED:
+  # Always record - vzdump will stop it, we must restart it
+  echo "$vmid" >> "$ORIGINAL_STATE_FILE"
+  ```
+  
+- **Improved**: `backup-abort` phase now ensures VM restart:
+  ```bash
+  backup-abort)
+      if [ -n "$VMID" ]; then
+          echo "$VMID" >> "$ORIGINAL_STATE_FILE"
+      fi
+      ;;
+  ```
+
+### 📊 Real-World Impact
+
+**Discovered Issue:**
+- VM 101 backup aborted due to guest-agent timeout
+- Hook log showed NO "recording for restart" entry (race condition)
+- VM stayed stopped after backup job completed
+- Manual intervention required to identify and restart VM
+
+**After Fix:**
+- All VMs automatically added to restart list
+- VMs restart even after backup failures/aborts
+- No manual intervention needed
+- Works reliably with VMs that lack qemu-guest-agent
+
+### 🔬 Technical Details
+
+**Root Cause Analysis:**
+```
+Timeline of race condition:
+T0: vzdump starts backup job
+T1: vzdump begins VM shutdown (mode: stop)
+T2: Hook backup-start phase called
+T3: is_vm_running() returns false (VM shutting down)
+T4: VM not recorded in restart list
+T5: Backup completes/fails
+T6: job-end: No VMs to restart
+```
+
+**Why it only affected some VMs:**
+- VMs sharing a GPU had conflicts → other VMs stopped → recorded in STATEFILE ✅
+- VMs with unique GPU had no conflicts → nothing stopped → VM itself not recorded ❌
+- VM 101 had unique GPU 01:00.0 → affected by race condition
+
+### 📚 Documentation
+
+- Added comprehensive bug analysis document
+- Documented race condition mechanics
+- Added troubleshooting guide for VM restart failures
+
+### ⚙️ Compatibility
+
+- ✅ Proxmox VE 7.x and 8.x
+- ✅ All backup modes (stop, suspend, snapshot)
+- ✅ VMs with and without qemu-guest-agent
+- ✅ Single-GPU and multi-GPU configurations
+- ✅ Backward compatible with all v2.x configurations
+
+---
+
 ## [2.2.0] - 2025-11-04
 
 ### 🔥 Critical Fix - Production Ready Release

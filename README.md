@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Proxmox](https://img.shields.io/badge/Proxmox-7.x%20%7C%208.x-orange.svg)](https://www.proxmox.com/)
 [![Bash](https://img.shields.io/badge/Bash-4.0%2B-green.svg)](https://www.gnu.org/software/bash/)
-[![Version](https://img.shields.io/badge/Version-2.2-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-2.4-blue.svg)](CHANGELOG.md)
 [![GitHub issues](https://img.shields.io/github/issues/alflewerken/proxmox-gpu-backup-hook)](https://github.com/alflewerken/proxmox-gpu-backup-hook/issues)
 [![GitHub stars](https://img.shields.io/github/stars/alflewerken/proxmox-gpu-backup-hook?style=social)](https://github.com/alflewerken/proxmox-gpu-backup-hook/stargazers)
 
@@ -15,19 +15,25 @@
 >
 > After hours of failed backup jobs and manual VM juggling, I built this hook to automate what should have been automatic. Version 2.2 includes a critical fix for `--mode stop` backups that makes it production-ready!
 
-## 🆕 What's New in Version 2.2
+## 🆕 What's New in Version 2.4
 
-🔥 **CRITICAL FIX: VMID Parsing** - Fixed broken backup-start detection in `--mode stop` backups  
-✨ **Production Ready** - Extensively tested with real-world Proxmox setups  
-✨ **Zero-Configuration** - Automatic GPU detection, no manual setup needed  
-✨ **Future-Proof** - Adapts automatically when you add/remove VMs  
-✨ **Container Support** - Works with both VMs and LXC containers  
+🔥 **CRITICAL FIX: Race Condition** - Fixed VMs not restarting after backup failures  
+🔥 **CRITICAL FIX: Backup-Abort** - VMs now restart even when backups fail/abort  
+✨ **Reliable Restart** - All VMs properly recorded for restart, no status checks  
+✨ **Guest-Agent Independent** - Works perfectly without qemu-guest-agent  
+✨ **Production Tested** - Fixes real-world issues discovered in production
 
-**The Problem (Fixed in v2.2):**
+**The Problem (Fixed in v2.4):**
 ```bash
-# Proxmox passes: backup-start stop 105
-# v2.0-2.1: VMID=$2 → Got "stop" instead of "105" ❌
-# v2.2:     VMID=$3 → Correctly gets "105" ✅
+# Race Condition Timeline:
+# T1: vzdump starts VM shutdown
+# T2: hook checks is_vm_running() → false (already shutting down)
+# T3: VM not recorded for restart
+# T4: Backup fails → VM stays stopped ❌
+
+# v2.4 Fix:
+# Always record VMs for restart, no status checks ✅
+# Works with all backup modes and failure scenarios ✅
 ```
 
 **Version 2.0 vs 2.2:**
